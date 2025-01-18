@@ -1,0 +1,1 @@
+{"region": "eu-west-3", "key_name": "", "master_instance_type": "t4g.small", "worker_instance_type": "t4g.small", "service_instance_type": "t4g.small", "num_masters": 3, "num_workers": 2}
