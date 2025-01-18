@@ -7,8 +7,12 @@ terraform {
     }
 }
 
+variable "region" {
+   type = string
+}
+
 provider "aws" {
-    region = "eu-west-3"
+    region = var.region
 }
 
 resource "aws_s3_bucket" "k8s_storage"{
