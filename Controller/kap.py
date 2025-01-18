@@ -9,8 +9,10 @@ import time
 import argparse
 from pathlib import Path
 
+#Obtain working directory
 working_dir = os.getcwd().replace("\\","/")
 
+#Obtain default arguments
 with open(working_dir + "/config.json", "r") as file:
     scriptargs = json.load(file)
 
@@ -20,12 +22,11 @@ with open(scriptargs['tf_dir'] + "/Infra_deploy/dev.json", "r") as file:
 with open(working_dir + "/k8s_dinamic_vars.json", "r") as file:
      k8sargs = json.load(file)
 
-
+#Set global variables
 ssh_username = 'ubuntu'
 ec2_name = 'kservice'
 
-
-
+#Function to obtain data from an EC2 instance
 def get_ec2_info(ec2_name, aws_region):
     ec2_client = client('ec2', region_name=aws_region)
 
@@ -41,7 +42,7 @@ def get_ec2_info(ec2_name, aws_region):
 
     return ec2_instance['Reservations'][0]['Instances'][0]
     
-
+#Function to check status of an S3 bucket
 def check_s3_bucket(s3_name, aws_region):
     s3_client = client('s3', region_name=aws_region)
 
@@ -53,7 +54,7 @@ def check_s3_bucket(s3_name, aws_region):
          
     return False
 
-
+#Function to establish an SSH connection with a host
 def ssh_connect(dns_name, username, private_key_path):
     ssh = paramiko.SSHClient()
     ssh.load_system_host_keys()
@@ -62,14 +63,13 @@ def ssh_connect(dns_name, username, private_key_path):
 
     return ssh
 
-
-
+#Function to execute a CLI command on a host through SSH
 def ssh_exec(ssh_obj, cmd):
     stdin, stdout, stderr = ssh_obj.exec_command(cmd)
 
     return({'stdin':stdin, 'stdout':stdout, 'stderr':stderr})
 
-
+#Function to perform a serial read of the output of a command
 def serial_read(std):
     for line in std['stdout']:
         print(line.strip())
@@ -77,20 +77,19 @@ def serial_read(std):
     for line in std['stderr']:
         print(line.strip())
      
-
-
+#Function to copy a local file into a host directory through SCP
 def scp_put_file(ssh_obj, src_path, dest_path):
 
     with SCPClient(ssh_obj.get_transport()) as scp:
         scp.put(src_path, dest_path)
 
-
+#Function to restrieve a remote file from a host to a local directory
 def scp_get_file(ssh_obj, src_path, dest_path):
 
     with SCPClient(ssh_obj.get_transport()) as scp:
         scp.get(src_path, dest_path)
 
-
+#Function to tun a terraform command
 def run_terraform_cmd(act, tf_dir, *args):
 
      cmd = ['terraform', f"-chdir={tf_dir}", act]
@@ -112,7 +111,7 @@ def run_terraform_cmd(act, tf_dir, *args):
 
      return({'stdin':process.stdin, 'stdout':process.stdout, 'stderr':process.stderr})
 
-
+#Function to modify JSON files
 def mod_json(file_path, args):
      if not (os.path.exists(file_path)):
         data = args
@@ -127,8 +126,7 @@ def mod_json(file_path, args):
      with open(file_path, 'w') as file:
                 json.dump(data, file)  
 
-             
-
+#Function to add the specified arguments to their respective variables files
 def add_args(argsdict):
 
      for key in argsdict.keys():
@@ -142,7 +140,7 @@ def add_args(argsdict):
           if key in k8sargs.keys():
                k8sargs[key] = argsdict[key]
 
-
+#Function to establish the backup settings
 def backup_setting():
     if args["backup"] != None:
          args["backup_name"] = args["backup"]
@@ -152,7 +150,7 @@ def backup_setting():
          args["backup_name"] = k8sargs["backup_name"]
          args["backup"] = False
 
-
+#Function to generate a dynamic Ansible inventory
 def generate_inventory():
      
      inventory = {
@@ -214,10 +212,10 @@ def generate_inventory():
      with open(working_dir + "/inventory.json", 'w') as file:
           json.dump(inventory, file, indent=4)
 
-
-
+#Function to execute the Ansible component
 def k8s_deploy():
 
+     #Retrievement of the Service Node infromation
      count = 0
      while True:
           try:
@@ -230,7 +228,7 @@ def k8s_deploy():
                if count == 6:
                     raise Exception("Error: Unable to reach kservice. Time exceeded.")
      
-    
+     #SSH connection establishment with the Service Node
      count = 0
      while True:
           try:
@@ -245,8 +243,10 @@ def k8s_deploy():
                if count == 24:
                     raise Exception(f"Error: Unable to stablish SHH connection. {e}")
                
-
+     #Cluster configuration
      print("Configuring Cluster...")
+
+     #Verification of the existance of the KAP directory in the Service Node
      count = 0
      while True:
           try:
@@ -262,9 +262,13 @@ def k8s_deploy():
                if count == 60:
                     raise Exception(f"Error: Unable to configure cluster: {e}")
 
+     #Modification of the Ansible's variables files with the new Service Node public IP
      mod_json(f"{working_dir}/k8s_dinamic_vars.json", {"lb_address_pub": ec2['PublicDnsName']})
+
+     #Generation of the new inventory file
      generate_inventory()
 
+     #Transmition of the dynamic files to the Service Node
      while True:
           try:
                scp_put_file(ssh, f"{working_dir}/k8s_dinamic_vars.json", "/home/ubuntu/kap/")
@@ -278,11 +282,13 @@ def k8s_deploy():
                if count == 6:
                     raise Exception(f"Error: Unable to configure cluster: {e}")
 
+     #Transmition of the SSH private key to the Service Node
      if (ssh_exec(ssh, f"stat /home/ubuntu/{Path(scriptargs['private_key_path']).name}")['stdout'].channel.recv_exit_status() != 0):
           print("Copying SSH key to Service Machine...")
           scp_put_file(ssh, scriptargs["private_key_path"], '/home/ubuntu/')
           ssh_exec(ssh, 'chmod 400 /home/ubuntu/test01-key.pem')          
      
+     #Transmition of the S3 bucket credentials to the Service Node if the Cluster Recovery System has been requested
      if k8sargs["backup"] == True:
           print("Copying S3 bucket credentials file to Service Machine...")
           if (ssh_exec(ssh, f"stat /home/ubuntu/{Path(scriptargs['s3_credentials_path']).name}")['stdout'].channel.recv_exit_status() != 0):
@@ -292,9 +298,11 @@ def k8s_deploy():
 
      print("The cluster environment has been successfully configured.")
 
+     #Execution of the Ansible component / playbook
      print("Deploying Cluster...")
      serial_read(ssh_exec(ssh, 'cd /home/ubuntu/kap/ && ansible-playbook k8s_deploy.yaml'))
 
+     #Retrievement of the kubeconfig file from the Service Node
      print("Setting local environment...")
      scp_get_file(ssh, "/tmp/kap/kubeconfig", f"{scriptargs["kube_dir"]}/config")
 
@@ -304,13 +312,15 @@ def k8s_deploy():
      print("Execute 'kubectl port-forward -n kubernetes-dashboard service/kubernetes-dashboard-kong-proxy 8443:443' to expose the Kubernetes dashboard.")
      print("You can access it by seraching 'https://localhost:8443' on your borwser.")
 
-
+#Function to execute the Terraform component
 def create_cluster():
 
+     #Deployment of the S3 bucket if the Cluster Recovery System has been requested
      if k8sargs["backup"] == True:
 
           print("Setting backup storage...")
 
+          #Initiation of the Terraform working directory is not initiated yet
           if not (os.path.isdir(scriptargs["tf_dir"] + '/s3_deploy/.terraform')):
                print("Initializing Terraform environment...")
                run_terraform_cmd('init', scriptargs["tf_dir"] + "/s3_deploy") 
@@ -318,7 +328,7 @@ def create_cluster():
           serial_read(run_terraform_cmd('plan', scriptargs["tf_dir"] + "/s3_deploy", f'-out={scriptargs["tf_dir"] + "/s3_deploy/k8s-plan.tfplan"}'))
           serial_read(run_terraform_cmd('apply', scriptargs["tf_dir"] + "/s3_deploy",scriptargs["tf_dir"] + "/s3_deploy/k8s-plan.tfplan"))
           
-
+     #Initiation of the Terraform working directory is not initiated yet
      if not (os.path.isdir(scriptargs["tf_dir"] + '/Infra_deploy/.terraform')):
           print("Initializing Terraform environment...")
           run_terraform_cmd('init', scriptargs["tf_dir"] + '/Infra_deploy') 
@@ -329,6 +339,8 @@ def create_cluster():
           raise ValueError("Invalid argument. Only yes/no is valid.")
      
      if a == 'yes':
+
+          #Execution of Terraform plan
           print("Printing changes...")
           serial_read(run_terraform_cmd('plan', scriptargs["tf_dir"] + "/Infra_deploy", f'-out={scriptargs["tf_dir"] + "/Infra_deploy/k8s-plan.tfplan"}', f"-var-file={scriptargs["tf_dir"] + "/Infra_deploy/dev.json"}"))
 
@@ -338,6 +350,8 @@ def create_cluster():
                raise ValueError("Invalid argument. Only yes/no is valid.")
      
           if b == 'yes':
+
+               #Execution of Terraform apply
                print("Applying changes...")
                serial_read(run_terraform_cmd('apply', scriptargs["tf_dir"] + "/Infra_deploy", scriptargs["tf_dir"] + "/Infra_deploy/k8s-plan.tfplan"))
                k8s_deploy()
@@ -347,12 +361,14 @@ def create_cluster():
                print(f"If you know what you are doing, change the terraform's main file in {scriptargs["tf_dir"]}/Infra_deploy directory according to your needs.\nWe don't garantee the correct functionality of the application if changes are made.")
 
      elif a == 'no':
+
+          #Execution of Terraform plan and apply if no validation has been requeted
           print("Applying changes...")
           serial_read(run_terraform_cmd('plan', scriptargs["tf_dir"] + "/Infra_deploy", f'-out={scriptargs["tf_dir"] + "/Infra_deploy/k8s-plan.tfplan"}', f"-var-file={scriptargs["tf_dir"] + "/Infra_deploy/dev.json"}"))
           serial_read(run_terraform_cmd('apply', scriptargs["tf_dir"] + "/Infra_deploy", scriptargs["tf_dir"] + "/Infra_deploy/k8s-plan.tfplan"))
           k8s_deploy()
 
-
+#Function to destroy the cluster
 def destroy_cluster():
      a = input("Do you want to destroy the cluster? (yes/no)\n¡Remember to save your changes on an external datastore if needed!\nOnly 'yes' will be accepted to approve.\n\nEnter value: ")
 
@@ -360,6 +376,8 @@ def destroy_cluster():
           raise ValueError("Invalid argument. Only yes/no is valid.")
      
      if a == 'yes':
+
+          #Execution of Terraform destroy
           print("Destroying cluster...")
           serial_read(run_terraform_cmd('destroy', scriptargs["tf_dir"] + "/Infra_deploy", f"-var-file={scriptargs["tf_dir"] + "/Infra_deploy/dev.json"}", "-auto-approve"))
           if os.path.exists(scriptargs['kube_dir'] + "/config"):
@@ -370,8 +388,10 @@ def destroy_cluster():
      elif a == 'no':
           print("Destruction cancelled.")
 
-
+#Function to access an existing cluster
 def join_cluster():
+
+     #Retrievement of the Service Node infromation
      count = 0
      while True:
           try:
@@ -384,6 +404,7 @@ def join_cluster():
                if count == 6:
                     raise Exception("Error: Unable to reach kservice. Time exceeded.")
 
+     #SSH connection establishment with the Service Node
      count = 0         
      while True:
           try:
@@ -398,11 +419,14 @@ def join_cluster():
                if count == 24:
                     raise Exception(f"Error: Unable to stablish SHH connection. {e}")
 
+      #Retrievement of the kubeconfig file from the Service Node
      print("Setting local environment...")
      scp_get_file(ssh, "/home/ubuntu/.kube/config", scriptargs["kube_dir"])
 
-
+#Function to save the cluster's resources
 def save_cluster():
+
+     #Verification of the KAP S3 bucket existance
      count = 0
      while True:
           if check_s3_bucket("kap-bucket", tfargs["region"]) == True:
@@ -414,6 +438,7 @@ def save_cluster():
                if count == 6:
                     raise Exception("Error: Unable to reach kap-bucket. Time exceeded.")
      
+     #Retrievement of the Service Node infromation
      count = 0
      while True:
           try:
@@ -426,6 +451,7 @@ def save_cluster():
                if count == 6:
                     raise Exception("Error: Unable to reach kservice. Time exceeded.")
 
+     #SSH connection establishment with the Service Node
      count = 0         
      while True:
           try:
@@ -439,12 +465,13 @@ def save_cluster():
                time.sleep(5)
                if count == 24:
                     raise Exception(f"Error: Unable to stablish SHH connection. {e}")
-               
+
+     #Backup generation
      ssh_exec(ssh, f'velero backup create {k8sargs["backup_name"]} --include-namespaces {scriptargs["backup_namespaces"]}')
      print("Cluster saved succesfully!!")
      ssh.close()
                
-
+#Function to validate the format of the -n option
 def validate_format(valor):
     try:
         masters, workers = valor.split(":")
@@ -452,7 +479,7 @@ def validate_format(valor):
     except ValueError:
         raise argparse.ArgumentTypeError(f"'{valor}' no tiene el formato int:int (ejemplo: 5:10)")
     
-
+#Function to verify that de-scaling has not been requested
 def validate_scaling():
     try:  
         get_ec2_info(ec2_name, args["region"])
@@ -464,7 +491,7 @@ def validate_scaling():
     if args["num_masters"] < tfargs["num_masters"] or args["num_workers"] < tfargs["num_workers"]:
           raise Exception("De-scalation is not supported. To de-scale, destroy and redeploy the cluster with the desired dimentions.")
 
-
+#Arguments declaration
 parse = argparse.ArgumentParser()
 parse.add_argument("mode", choices=['create','destroy', 'join-cluster', 'reset-args', 'list-args', 'save'])
 parse.add_argument("-n", default=f"{tfargs["num_masters"]}:{tfargs["num_workers"]}", type=validate_format)
@@ -481,6 +508,7 @@ parse.add_argument("-worker-instance-type", default=tfargs["worker_instance_type
 parse.add_argument("-service-instance-type", default=tfargs["service_instance_type"])
 parse.add_argument("-backup", default=None)
 
+#Arguments processing
 args = vars(parse.parse_args())
 
 args["key_name"] = Path(args['private_key_path']).stem
@@ -496,9 +524,11 @@ backup_setting()
 add_args(args)
 
 mod_json(scriptargs["tf_dir"] + "/Infra_deploy/dev.json", tfargs)
+mod_json(scriptargs["tf_dir"] + "/s3_deploy/dev.json", {"region":tfargs["region"]})
 mod_json(working_dir + "/config.json", scriptargs)
 mod_json(working_dir + "/k8s_dinamic_vars.json", k8sargs)
 
+#Subcommands processing
 if args['mode'] == "create":
      create_cluster()
 
@@ -507,16 +537,28 @@ elif args['mode'] == "destroy":
 
 elif args['mode'] == "reset-args":
      scriptargs = {
-          "kube_dir": "C:/Users/malep/.kube",
-          "tf_dir": "C:/Users/malep/terraform", 
-          "private_key_path": "C:/Users/malep/Documents/AWS/test01-key.pem",
+          "kube_dir": "", 
+          "tf_dir": "", 
+          "private_key_path": "", 
+          "s3_credentials_path": "", 
+          "backup_namespaces": "default"
      }
      tfargs = {
-          "region": "eu-west-3",
-          "instance_type": "t4g.small",
-          "num_masters": 3,
+          "region": "eu-west-3", 
+          "key_name": "", 
+          "master_instance_type": "t4g.small", 
+          "worker_instance_type": "t4g.small", 
+          "service_instance_type": "t4g.small", 
+          "num_masters": 3, 
           "num_workers": 2
      }
+     k8sargs = {"lb_address_pub": "",
+          "kubernetes_version": "1.31", 
+          "region": "eu-west-3", 
+          "backup": False, 
+          "backup_name": "test01"
+     }
+     
 
      mod_json(scriptargs["tf_dir"] + "/Infra_deploy/dev.json", tfargs)
      mod_json(working_dir + "/config.json", scriptargs)
@@ -549,3 +591,4 @@ elif args['mode'] == "join-cluster":
 
 elif args['mode'] == 'save':
      save_cluster()
+     
