@@ -1,2 +1,2 @@
 # kap_docs
-Welcome to the KAP docs repository!!
+Welcome to the KAP documentation repository!!
