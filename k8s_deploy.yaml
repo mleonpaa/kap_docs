@@ -1,0 +1,460 @@
+---
+    
+- name: Set administrator environment
+  hosts: control
+  become: true
+  vars_files:
+    - k8s_vars.yaml
+    - k8s_dinamic_vars.json
+    
+  tasks:
+    - name: Set .kube directory
+      file:
+        path: "{{ k8s_working_dir }}/.kube"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Create KAP shared directory
+      file:
+        path: "{{ k8s_working_dir }}/.kap"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Create KAP temporary directory
+      file:
+        path: "/tmp/kap"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Create Helm & Velero temporary directory
+      file:
+        path: "/tmp/{{ item.key }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      loop: "{{ binaries | dict2items }}"
+
+    - name: Install required packages
+      apt:
+        name: "{{ admin_pkges }}"
+        state: latest
+        update_cache: true
+
+    - name: Install HAproxy
+      apt:
+        name: "haproxy"
+        state: latest
+        update_cache: true
+
+    - name: Configure HAproxy
+      template:
+        src: haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+
+    - name: Restart HAproxy service
+      systemd_service:
+        name: "haproxy"
+        enabled: true
+        state: restarted
+
+    - name: Check if Kubernetes GPG keys already exists
+      stat:
+        path: "/etc/apt/keyrings/kubernetes-apt-keyring.gpg"
+      register: kube_gpg_check
+
+    - name: Download the public signing key for the Kubernetes package repositories
+      shell: "curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg"
+      when: kube_gpg_check.stat.exists == false
+
+    - name: Check if Kubernetes repository exists
+      stat:
+        path: "/etc/apt/sources.list.d/kubernetes.list"
+      register: kube_repo_check
+
+    - name: Add Kubernetes Repository
+      lineinfile:
+        path: "/etc/apt/sources.list.d/kubernetes.list"
+        line: "{{ kube_repo_content }}"
+        create: true
+      when: kube_repo_check
+
+    - name: Install Kubectl
+      apt:
+        name: "kubectl"
+        state: latest
+        update_cache: true
+
+    - name: Curl Helm and Velero binaries tar
+      get_url:
+        url: "{{ item.value.tar_url }}"
+        dest: "/tmp/{{ item.value.tmp_path }}"
+      loop: "{{ binaries | dict2items }}"
+
+    - name: Unarchive Helm tar
+      unarchive:
+        src: "/tmp/{{ item.value.tmp_path }}"
+        dest: "/tmp/{{ item.key }}"
+      loop: "{{ binaries | dict2items }}"
+
+    - name: Move binaries to PATH
+      copy:
+        src: "/tmp/{{ item.value.bin_path }}"
+        dest: "/usr/local/bin/"
+        force: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: 755
+      become: True
+      loop: "{{ binaries | dict2items }}"
+
+  
+- name: Set up Deployment Environmet
+  hosts: k8snodes
+  become: true
+  vars_files:
+    - k8s_vars.yaml
+    - k8s_dinamic_vars.json
+    
+  tasks:
+    - name: Disable swap
+      command: swapoff -a
+
+    - name: Modify /etc/fstab file
+      command: sed -i.bak '/swap/s/^\//#\//' /etc/fstab
+
+    - name: Install required packages
+      apt:
+        name: "{{ admin_pkges }}"
+        state: latest
+        update_cache: true
+
+    - name: Check if Docker and Kubernetes GPG keys already exists
+      stat:
+        path: "/etc/apt/keyrings/{{ item }}-apt-keyring.gpg"
+      register: gpg_check
+      loop:
+        - kubernetes
+        - docker
+
+    - name: Download the public signing key for the Kubernetes package repositories
+      shell: "curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/{{ item.item }}-apt-keyring.gpg"
+      when:
+        - item.item == "kubernetes"
+        - item.stat.exists == false
+      loop: "{{ gpg_check.results }}"
+
+    - name: Download the public signing key for the Docker package repositories
+      shell: "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/{{ item.item }}-apt-keyring.gpg"
+      when:
+        - item.item == "docker"
+        - item.stat.exists == false
+      loop: "{{ gpg_check.results }}"
+
+    - name: Check if Kubernetes and Docker repositories exists
+      stat:
+        path: "/etc/apt/sources.list.d/{{ item }}.list"
+      register: repo_check
+      loop:
+        - kubernetes
+        - docker
+
+    - name: Add Kubernetes Repository
+      lineinfile:
+        path: "/etc/apt/sources.list.d/kubernetes.list"
+        line: "{{ kube_repo_content }}"
+        create: true
+      when:
+        - item.item == "kubernetes"
+        - item.stat.exists == false
+      loop: "{{ repo_check.results }}"
+
+    - name: Add Docker Repository
+      shell: "echo {{ docker_repo_content }} > /etc/apt/sources.list.d/docker.list"
+      when:
+        - item.item == "docker"
+        - item.stat.exists == false
+      loop: "{{ repo_check.results }}"    
+
+    - name: Install Kubernetes and Docker packages
+      apt:
+        name: "{{ pkges.docker + pkges.kubernetes }}"
+        state: latest
+        update_cache: true
+
+    - name: Stablish Kubernetes packages in hold
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop: "{{ pkges.kubernetes }}"
+
+    - name: Generate default containerd config file
+      shell: containerd config default > /etc/containerd/config.toml
+
+    - name: Set systemd as cgroup driver
+      lineinfile:
+        path: "/etc/containerd/config.toml"
+        regex: "SystemdCgroup = false"
+        line: "            SystemdCgroup = true"
+
+    - name: Enable services
+      systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: restarted
+      loop: "{{ services }}"
+    
+    - name: Create KAP directory
+      file:
+        path: "{{ k8s_working_dir }}/kap"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user}}"
+
+    - name: Create .log directory
+      file:
+        path: "{{ k8s_working_dir }}/kap/.log"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user}}"
+
+
+- name: Deploy cluster on Master Node
+  hosts: admin
+  become: true
+  vars:
+    bin_bash: '#!/bin/bash'
+  vars_files:
+    - k8s_vars.yaml
+    - k8s_dinamic_vars.json
+    
+  tasks:
+    - name: Check if kube-join.sh file already exists.
+      stat:
+        path: "{{ k8s_working_dir }}/kap/kube-join.sh"
+      register: kube_join_check
+    
+    - name: Check if kubelet is running.
+      service_facts: 
+    
+    - name: Change kube-join.sh file permisions
+      file:
+        path: "/etc/kubernetes/admin.conf"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      when: kube_join_check.stat.exists == true
+        
+    - name: Kubeadm block
+      block:
+        - name: Initialize cluster & create join script
+          shell: "{ echo {{ bin_bash | quote }}; sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-cert-extra-sans {{ lb_address_pub }} --control-plane-endpoint {{ control_plane_end_point }} --upload-certs 2>&1 | tee {{ k8s_working_dir }}/kap/.log/kubeadm.log | grep -e {{ search.one | quote }} -e {{ search.two }} -e {{ search.three }} | head -n 3; } > {{ k8s_working_dir }}/kap/kube-join.sh"
+          register: kubeadm_check
+
+        - name: Copy admin.conf file to administrator
+          fetch:
+            src: "/etc/kubernetes/admin.conf"
+            dest: "{{ k8s_working_dir }}/.kube/config"
+            flat: true
+        
+        - name: Copy kube-join.sh file to shared directory
+          fetch:
+            src: "{{ k8s_working_dir }}/kap/kube-join.sh"
+            dest: "{{ k8s_working_dir }}/.kap/"
+            flat: true
+            
+      when: kube_join_check.stat.exists == false and ansible_facts.services["kubelet.service"].state == "stopped"
+
+
+- name: Add master nodes to the cluster
+  hosts: managed
+  become: true
+  vars_files:
+    - k8s_vars.yaml
+    - k8s_dinamic_vars.json
+  
+  tasks:
+    - name: Check if kube-join.sh file already exists.
+      stat:
+        path: "{{ k8s_working_dir }}/kap/kube-join.sh"
+      register: kube_join_check
+    
+    - name: Check if kubelet is running.
+      service_facts: 
+
+    - name: Execution block
+      block:
+        - name: Check if kube-join.sh exists in shared directory
+          stat:
+            path: "{{ k8s_working_dir }}/.kap/kube-join.sh"
+          delegate_to: localhost
+          register: kube_join_adm_check
+
+        - name: Join Cluster.
+          block:
+            - name: Copy kube-join.sh on master nodes
+              copy:
+                src: "{{ k8s_working_dir }}/.kap/kube-join.sh"
+                dest: "{{ k8s_working_dir }}/kap/"
+                mode: 0700
+
+            - name: Join cluster
+              command: "{{ k8s_working_dir }}/kap/kube-join.sh >> {{ k8s_working_dir }}/kap/.log/kubeadm.log 2>&1"
+
+          when: kube_join_adm_check.stat.exists == true
+
+      when: kube_join_check.stat.exists == false and ansible_facts.services["kubelet.service"].state == "stopped"
+
+
+- name: Add worker nodes to the cluster
+  hosts: wknodes
+  become: true
+  vars_files:
+    - k8s_vars.yaml
+    - k8s_dinamic_vars.json
+  
+  tasks:
+    - name: Check if kube-join.sh file already exists.
+      stat:
+        path: "{{ k8s_working_dir }}/kap/kube-join.sh"
+      register: kube_join_check
+    
+    - name: Check if kubelet is running.
+      service_facts: 
+    
+    - name: Execution block
+      block:
+        - name: Check if kube-join.sh file exists in shared directory.
+          stat:
+            path: "{{ k8s_working_dir }}/.kap/kube-join.sh"
+          delegate_to: localhost
+          register: kube_join_adm_check
+
+        - name: Join Cluster.
+          block:
+            - name: Copy kube-join.sh on worker nodes.
+              copy:
+                src: "{{ k8s_working_dir }}/.kap/kube-join.sh"
+                dest: "{{ k8s_working_dir }}/kap/"
+                mode: 0700
+
+            - name: Remove Control plane line in file
+              lineinfile:
+                path: "{{ k8s_working_dir }}/kap/kube-join.sh"
+                search_string: "control-plane"
+                state: absent
+
+            - name: Join cluster
+              command: "{{ k8s_working_dir }}/kap/kube-join.sh >> {{ k8s_working_dir }}/kap/.log/kubeadm.log 2>&1"
+          
+          when: kube_join_adm_check.stat.exists == true
+
+      when: kube_join_check.stat.exists == false and ansible_facts.services["kubelet.service"].state == "stopped"
+      
+
+- name: Final Steps
+  hosts: control
+  vars_files:
+    - k8s_vars.yaml
+    - k8s_dinamic_vars.json
+    
+  tasks:
+    - name: Copy kubeconfig to temporary directory
+      copy:
+        src: "{{ k8s_working_dir }}/.kube/config"
+        dest: "/tmp/kap/kubeconfig"
+        remote_src: True
+
+    - name: Set cluster access point to public DNS
+      lineinfile:
+        path: "/tmp/kap/kubeconfig"
+        search_string: "server"
+        line: "    server: https://{{ lb_address_pub }}:6443"
+
+    - name: Set Pods network
+      k8s:                                                                                                                                                                                                             
+        src: https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+        apply: True
+
+    - name: Set Kubernetes Dashboard
+      block:
+        - name: Add kubernetes-dasboard helm repository
+          kubernetes.core.helm_repository:
+            name: kubernetes-dashboard
+            repo_url: https://kubernetes.github.io/dashboard/
+
+        - name: Install Kubernetes Dashboard
+          kubernetes.core.helm:
+            name: kubernetes-dashboard
+            chart_ref: kubernetes-dashboard/kubernetes-dashboard
+            namespace: kubernetes-dashboard
+            create_namespace: true
+
+    - name: User administration
+      block:
+        - name: Create admin-user
+          k8s:                                                                                                                                                                                                             
+            src: "{{ k8s_working_dir }}/kap/.kubernetes/ServiceAccount.yaml"
+            apply: True
+      
+        - name: Bind admin-user to Role
+          k8s:                                                                                                                                                                                                             
+            src: "{{ k8s_working_dir }}/kap/.kubernetes/ClusterRoleBinding.yaml"
+            apply: True
+
+    - name: Velero
+      block:
+        - name: Check if the credentials file exists
+          stat:
+            path: "{{ k8s_working_dir }}/velero_credentials.txt"
+          register: velero_creds_check
+        
+        - name: Fail if the credentials file does not exist
+          fail:
+            msg: "The velero credentials file is does nos exist"
+          when: velero_creds_check.stat.exists == false
+  
+        - name: Check if velero exists
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Deployment
+            name: velero
+            namespace: velero
+          register: velero_check
+  
+        - name: Set up velero
+          block:
+            - name: Install velero
+              command: velero install --provider aws --plugins velero/velero-plugin-for-aws:v1.11.0 --bucket kap-bucket --backup-location-config region={{ region }} --snapshot-location-config region={{ region }} --secret-file {{ k8s_working_dir }}/velero_credentials.txt --kubeconfig={{ k8s_working_dir }}/.kube/config 
+  
+            - name: Wait until velero is up
+              kubernetes.core.k8s_info:
+                api_version: v1
+                kind: Deployment
+                name: velero
+                namespace: velero
+              register: velero_facts
+              until: >
+                velero_facts.resources[0].status.readyReplicas is defined and
+                velero_facts.resources[0].status.readyReplicas == velero_facts.resources[0].status.replicas
+              retries: 30  
+              delay: 5 
+  
+          when: velero_check.resources | length == 0
+
+        - name: Rescue
+          block:
+            - name: Check if backup exists
+              command: "velero describe backup {{ backup_name }}"
+              ignore_errors: True
+              register: back_facts
+              until: back_facts.failed == false
+              retries: 30          
+              delay: 5 
+      
+            - name: Rescue Backup
+              command: "velero restore create {{ backup_name }} --from-backup {{ backup_name }}"
+              when: back_facts.failed == false
+
+      when: backup == true
