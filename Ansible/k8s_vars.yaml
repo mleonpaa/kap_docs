@@ -1,0 +1,62 @@
+kube_repo_content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/ /"
+docker_repo_content: "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker-apt-keyring.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable"
+
+k8s_working_dir: "/home/{{ ansible_user }}"
+control_plane_end_point: "10.0.1.101:6443"
+
+binaries:
+  helm:
+    name: helm
+    tmp_path: helm/helm-v3.16.4-linux-arm64.tar.gz
+    tar_url: https://get.helm.sh/helm-v3.16.4-linux-arm64.tar.gz
+    bin_path: helm/linux-arm64/helm
+
+  velero:
+    name: velero
+    tmp_path: velero/velero-v1.15.0-linux-arm64.tar.gz
+    tar_url: https://github.com/vmware-tanzu/velero/releases/download/v1.15.0/velero-v1.15.0-linux-arm64.tar.gz
+    bin_path: velero/velero-v1.15.0-linux-arm64/velero
+
+search:
+  one: kubeadm join
+  two: discovery-token
+  three: --control-plane
+
+admin_pkges:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gpg
+  - python3-kubernetes
+
+pkges:
+  docker: 
+    - docker-ce
+    - docker-ce-cli
+    - containerd.io
+    - docker-buildx-plugin
+    - docker-compose-plugin
+  kubernetes:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+services:
+  - docker
+  - kubelet
+  - containerd
+
+ports:
+  master:
+    - 6443
+    - 2379-2380
+    - 10250
+    - 10259
+    - 10257
+
+  worker:
+    - 6443
+    - 10250
+    - 10256
+
+cni_url: "https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml"
