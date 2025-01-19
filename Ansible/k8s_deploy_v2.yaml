@@ -93,7 +93,7 @@
         dest: "/tmp/{{ item.value.tmp_path }}"
       loop: "{{ binaries | dict2items }}"
 
-    - name: Unarchive Helm tar
+    - name: Unarchive Helm and Velero tar
       unarchive:
         src: "/tmp/{{ item.value.tmp_path }}"
         dest: "/tmp/{{ item.key }}"
