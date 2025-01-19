@@ -1,6 +1,6 @@
 ---
     
-- nae: Set administrator environment
+- name: Set administrator environment
   hosts: control
   become: true
   vars_files:
