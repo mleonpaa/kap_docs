@@ -280,7 +280,9 @@ def k8s_deploy():
 
      print("The cluster has been succesfully deployed.\n\nTry to execute 'kubectl get nodes' from your working directory.\n\n")
      print("Execute 'kubectl port-forward -n kubernetes-dashboard service/kubernetes-dashboard-kong-proxy 8443:443' to expose the Kubernetes dashboard.")
-     print("You can access it by seraching 'https://localhost:8443' on your borwser.")
+     print("You can access it by seraching 'https://localhost:8443' on your borwser.\n\n")
+     print("Execute kubectl -n kubernetes-dashboard create token admin-user to generate a token to access the Dasboard.\n\n")
+    
 
 #Function to execute the Terraform component
 def create_cluster():
