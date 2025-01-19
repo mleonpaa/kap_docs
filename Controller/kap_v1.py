@@ -499,5 +499,3 @@ elif args['mode'] == "list-args":
 elif args['mode'] == "join-cluster":
      join_cluster()
 
-elif args['mode'] == 'save':
-     save_cluster()
